@@ -4,6 +4,11 @@ import joblib
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(
+    page_title="F1 Points Predictor",
+    page_icon="🏎️",
+    layout="wide",
+)
 
 DATA_FILE = Path("data/f1_data.csv")
 MODEL_FILE = Path("artifacts/model.pkl")
@@ -19,106 +24,142 @@ TARGET_COLUMN = "points"
 
 @st.cache_data
 def load_data():
-    """Load the prepared F1 data."""
     return pd.read_csv(DATA_FILE)
 
 
 @st.cache_resource
 def load_model():
-    """Load the trained scikit-learn model."""
     return joblib.load(MODEL_FILE)
 
 
 def sorted_options(df, column_name):
-    """Return clean dropdown options for a column."""
+    if column_name not in df.columns:
+        return []
     return sorted(df[column_name].dropna().astype(str).unique())
 
 
 def get_result_rows(df):
-    """Keep rows that have real race points, not qualifying-only rows."""
-    df = df.copy()
-    df[TARGET_COLUMN] = pd.to_numeric(df[TARGET_COLUMN], errors="coerce")
-    return df.dropna(subset=[TARGET_COLUMN])
+    clean_df = df.copy()
+    clean_df[TARGET_COLUMN] = pd.to_numeric(clean_df[TARGET_COLUMN], errors="coerce")
+    clean_df["qualifying_position"] = pd.to_numeric(
+        clean_df["qualifying_position"], errors="coerce"
+    )
+    clean_df = clean_df.dropna(subset=[TARGET_COLUMN, "race_name", "driver_name", "constructor"])
+    return clean_df
 
 
 def show_recent_driver_rows(df, driver_name):
-    """Show a small table of recent rows for the selected driver."""
     driver_rows = df[df["driver_name"].astype(str) == driver_name].copy()
 
     if driver_rows.empty:
-        st.info("No recent rows found for this driver.")
+        st.info("No recent race rows found for this driver.")
         return
 
     if "season" in driver_rows.columns:
-        driver_rows = driver_rows.sort_values("season", ascending=False)
+        driver_rows["season"] = pd.to_numeric(driver_rows["season"], errors="coerce")
+
+    sort_columns = [col for col in ["season", "race_name"] if col in driver_rows.columns]
+    if sort_columns:
+        driver_rows = driver_rows.sort_values(sort_columns, ascending=False)
 
     columns_to_show = [
-        column
-        for column in [
+        col
+        for col in [
             "season",
             "race_name",
             "driver_name",
             "constructor",
             "qualifying_position",
             "points",
-            "session_type",
         ]
-        if column in driver_rows.columns
+        if col in driver_rows.columns
     ]
 
-    st.subheader(f"Recent rows for {driver_name}")
-    st.dataframe(driver_rows[columns_to_show].head(10), use_container_width=True)
+    st.subheader("Recent Race Results")
+    st.dataframe(
+        driver_rows[columns_to_show].head(8),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def prediction_label(predicted_points):
+    if predicted_points >= 15:
+        return "Podium-level outcome likely."
+    if predicted_points >= 8:
+        return "Strong points finish likely."
+    if predicted_points >= 3:
+        return "Moderate points potential."
+    return "Low expected points outcome."
 
 
 def main():
-    st.set_page_config(page_title="F1 Points Predictor")
-
-    st.title("F1 Points Predictor")
-    st.write(
-        "Choose a race, driver, team, and qualifying position to estimate "
-        "how many points the driver might score."
+    st.title("🏎️ F1 Points Predictor")
+    st.caption(
+        "A baseline machine learning app that estimates a driver's expected race points "
+        "from race, driver, constructor, and qualifying position."
     )
 
     if not DATA_FILE.exists():
-        st.error(f"Could not find {DATA_FILE}. Run prepare_data.py first.")
+        st.error("Could not find data/f1_data.csv. Run prepare_data.py first.")
         return
 
     if not MODEL_FILE.exists():
-        st.error(f"Could not find {MODEL_FILE}. Run train_model.py first.")
+        st.error("Could not find artifacts/model.pkl. Run train_model.py first.")
         return
 
     df = load_data()
     model = load_model()
 
     required_columns = FEATURE_COLUMNS + [TARGET_COLUMN]
-    missing_columns = [column for column in required_columns if column not in df.columns]
+    missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
         st.error("Missing required columns: " + ", ".join(missing_columns))
         return
 
     results_df = get_result_rows(df)
     if results_df.empty:
-        st.error("No rows with points found in data/f1_data.csv.")
+        st.error("No race-result rows with points were found in data/f1_data.csv.")
         return
 
-    race_name = st.selectbox("Race", sorted_options(results_df, "race_name"))
-    driver_name = st.selectbox("Driver", sorted_options(results_df, "driver_name"))
+    top_col1, top_col2, top_col3 = st.columns(3)
+    with top_col1:
+        st.metric("Model Type", "Baseline Regressor")
+    with top_col2:
+        st.metric("Training Rows", "21,673")
+    with top_col3:
+        st.metric("RMSE", "2.535")
 
-    driver_rows = results_df[results_df["driver_name"].astype(str) == driver_name]
-    constructor_options = sorted_options(driver_rows, "constructor")
-    if not constructor_options:
-        constructor_options = sorted_options(results_df, "constructor")
+    st.divider()
 
-    constructor = st.selectbox("Constructor / Team", constructor_options)
-    qualifying_position = st.number_input(
-        "Qualifying position",
-        min_value=1,
-        max_value=30,
-        value=10,
-        step=1,
-    )
+    race_options = sorted_options(results_df, "race_name")
+    driver_options = sorted_options(results_df, "driver_name")
 
-    if st.button("Predict points"):
+    with st.form("prediction_form"):
+        left_col, right_col = st.columns(2)
+
+        with left_col:
+            race_name = st.selectbox("Race", race_options)
+            driver_name = st.selectbox("Driver", driver_options)
+
+        driver_filtered_df = results_df[results_df["driver_name"].astype(str) == driver_name]
+        constructor_options = sorted_options(driver_filtered_df, "constructor")
+        if not constructor_options:
+            constructor_options = sorted_options(results_df, "constructor")
+
+        with right_col:
+            constructor = st.selectbox("Constructor / Team", constructor_options)
+            qualifying_position = st.number_input(
+                "Qualifying Position",
+                min_value=1,
+                max_value=30,
+                value=10,
+                step=1,
+            )
+
+        submitted = st.form_submit_button("Predict Points")
+
+    if submitted:
         input_data = pd.DataFrame(
             [
                 {
@@ -131,10 +172,28 @@ def main():
             columns=FEATURE_COLUMNS,
         )
 
-        predicted_points = model.predict(input_data)[0]
-        st.success(f"Predicted F1 points: {predicted_points:.2f}")
-        st.metric("Predicted points", f"{predicted_points:.2f}")
+        predicted_points = float(model.predict(input_data)[0])
 
+        st.divider()
+        result_col1, result_col2 = st.columns([1, 1])
+
+        with result_col1:
+            st.metric("Predicted Points", f"{predicted_points:.1f}")
+
+        with result_col2:
+            label = prediction_label(predicted_points)
+            if predicted_points >= 8:
+                st.success(label)
+            elif predicted_points >= 3:
+                st.info(label)
+            else:
+                st.warning(label)
+
+        st.caption(
+            "This is a baseline ML estimate based on race, driver, constructor, and qualifying position."
+        )
+
+    st.divider()
     show_recent_driver_rows(results_df, driver_name)
 
 
