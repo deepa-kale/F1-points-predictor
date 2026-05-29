@@ -1,4 +1,4 @@
-# F1 Points Predictor
+# F1 Points Predictor 🏎️
 
 A simple Streamlit app that predicts a Formula 1 driver's expected points outcome based on race, driver, constructor, and qualifying position. This project uses historical F1 race and qualifying data, a baseline scikit-learn model, and a lightweight interactive interface for quick predictions.
 
